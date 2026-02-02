@@ -17,16 +17,45 @@ mod file;
 mod git;
 mod link;
 mod path_extras;
+mod to_utf8_str;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 
 use crate::diagnostic::Diagnostic;
 use crate::file::File;
-use crate::path_extras::{path_normalize_lexically, path_strip_prefix};
 use crate::link::{parse_external_link, parse_internal_link};
+use crate::path_extras::path_strip_prefix;
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
+enum DiagnosticName {
+    /// Link url is empty.
+    Empty,
+    /// External link is invalid.
+    InvalidExternalLink,
+    /// Link points to .md (instead of .html).
+    Md,
+    /// The pointed-to file does not exist.
+    Nonexistant,
+    /// Relative link points to a path outside of the root.
+    OutsideRoot,
+}
+
+impl DiagnosticName {
+    /// Get a `&'static str` for the variant.
+    fn as_str(&self) -> &'static str {
+        // must be the same as `crate::diagnostic::DiagnosticKind`
+        match self {
+            Self::Empty => "empty",
+            Self::Nonexistant => "nonexistant",
+            Self::Md => "md",
+            Self::OutsideRoot => "outside-root",
+            Self::InvalidExternalLink => "external-link-error",
+        }
+    }
+}
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -52,6 +81,10 @@ struct Args {
     /// Check ALL markdown files, even if they are ignored by .gitignore(s)
     #[arg(short, long, default_value_t = false)]
     no_gitignore: bool,
+
+    /// Turn off diagnostics. Can be given multiple times.
+    #[arg(long, use_value_delimiter = true, value_delimiter = ',')]
+    no_diag: Vec<DiagnosticName>,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -61,6 +94,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         verbose,
         json,
         oneline,
+        no_diag,
     } = Args::parse();
     let root = directory
         .canonicalize()
@@ -72,9 +106,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let files = read_md_files(&files);
 
+    let ignored_diags: HashSet<&str> = no_diag.iter().map(|val| val.as_str()).collect();
+
     // simple helper to output in json-line or string format, depending on if --json
     // argument was given or not
     let output = |diag: &Diagnostic| {
+        if ignored_diags.contains(diag.kind.typename()) {
+            return;
+        }
         println!(
             "{}",
             if json {
@@ -106,7 +145,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Ok(Some(_parsed_external)) => {
                         // TODO: an idea: check external links for 200 ...? or not
                         continue;
-                    },
+                    }
                     Ok(None) => parse_internal_link(&file.path, &root, link_url),
                     Err(error) => {
                         output(&diag.invalid_external_link(error));
@@ -136,7 +175,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 // check if the link points to a file outside of the root
                 let p = path_strip_prefix(&resolved_to, &root);
-                if let Some(k) = p && k.to_str().unwrap() == "" {
+                if let Some(k) = p
+                    && k.to_str().unwrap() == ""
+                {
                     output(&diag.outside_root());
                     continue;
                 }

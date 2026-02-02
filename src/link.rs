@@ -58,7 +58,6 @@ pub fn parse_internal_link(file_path: &Path, root: &Path, link: &str) -> url::Ur
         link_to_parse.push_str(fragment);
     }
 
-
     url::Url::parse(&link_to_parse).expect("no internal links can fail to parse")
 }
 
@@ -68,7 +67,10 @@ mod tests {
     use url::Url;
 
     fn t(expected: &str, path: &Path, root: &Path, link: &str) {
-        assert_eq!(Url::parse(expected).unwrap(), parse_internal_link(path, root, link));
+        assert_eq!(
+            Url::parse(expected).unwrap(),
+            parse_internal_link(path, root, link)
+        );
     }
 
     #[test]

@@ -6,6 +6,8 @@
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
 
+use crate::to_utf8_str::ToUtf8Str;
+
 /// An error (or likely probable error) that can occur with a link. This is the common
 /// properties.
 pub struct Diagnostic {
@@ -16,7 +18,7 @@ pub struct Diagnostic {
     /// The link url, where the link points to.
     url: String,
     /// Which kind of error this is.
-    kind: DiagnosticKind,
+    pub kind: DiagnosticKind,
 }
 
 /// The kinds of diagnostic for this link.
@@ -38,7 +40,7 @@ pub enum DiagnosticKind {
 
 impl DiagnosticKind {
     /// The name of this kind, in ALL CAPS.
-    fn typename(&self) -> &'static str {
+    pub fn typename(&self) -> &'static str {
         use DiagnosticKind::*;
         match self {
             Empty { .. } => "empty",
@@ -140,7 +142,7 @@ impl Diagnostic {
     pub fn to_multiline_string(&self) -> String {
         let mut out = String::new();
         let _ = writeln!(out, "{}:", self.kind.typename());
-        let _ = writeln!(out, "  File: {}", self.file.to_str().unwrap());
+        let _ = writeln!(out, "  File: {}", self.file.to_utf8_str());
         let _ = writeln!(out, "  Line: {}", self.lineno);
         let _ = writeln!(out, "  Url: {}", self.url);
         let _ = writeln!(out, "  Description: {}", self.kind.description());
@@ -153,23 +155,30 @@ impl Diagnostic {
                 let _ = writeln!(out, "  Error: {}", error);
             }
             DiagnosticKind::Md { resolved_path } => {
-                let resolved = resolved_path.to_str().expect("paths are utf-8");
+                let resolved = resolved_path.to_utf8_str();
                 let _ = writeln!(out, "  Link resolved to: {resolved}");
             }
             DiagnosticKind::Nonexistant { resolved_path } => {
-                let resolved = resolved_path.to_str().expect("paths are utf-8");
+                let resolved = resolved_path.to_utf8_str();
                 let _ = writeln!(out, "  Link resolved to: {resolved}");
             }
-            DiagnosticKind::OutsideRoot => {
-            }
+            DiagnosticKind::OutsideRoot => {}
         }
 
         out
     }
 
     pub fn to_json_line(&self) -> String {
-        // TODO use a lib?
-        let mut out = self.json_line_header();
+        // TODO use a lib to serialize to json line?
+        let file = self.file.to_utf8_str();
+        let typename = self.kind.typename();
+        let lineno = self.lineno;
+        let url = self.url.as_str();
+
+        let mut out = String::new();
+        let _ = write!(out, "{{\"type\":\"{typename}\",\"file\":\"{file}\"");
+        let _ = write!(out, ",\"lineno\":{lineno},\"url\":\"{url}\"");
+
         match &self.kind {
             DiagnosticKind::Empty { link_text } => {
                 let _ = write!(out, ",\"link_text\":\"{link_text}\"");
@@ -178,42 +187,18 @@ impl Diagnostic {
                 let _ = write!(out, ",\"error\":\"{error}\"");
             }
             DiagnosticKind::Nonexistant { resolved_path } => {
-                let resolved_to = resolved_path.to_str().unwrap();
+                let resolved_to = resolved_path.to_utf8_str();
                 let _ = write!(out, ",\"resolved_to\":\"{resolved_to}\"");
             }
             DiagnosticKind::Md { resolved_path } => {
-                let resolved_to = resolved_path.to_str().unwrap();
+                let resolved_to = resolved_path.to_utf8_str();
                 let _ = write!(out, ",\"resolved_to\":\"{resolved_to}\"");
             }
             DiagnosticKind::OutsideRoot => { /* nothing to do */ }
         }
         out.push('}');
+        assert!(!out.contains('\n'), "json line contains no newline");
         out
-    }
-
-    /// Get a half-done json output, with the common headers set.
-    fn json_line_header(&self) -> String {
-        // TODO use a lib?
-        let file = self.file.to_str().expect("file path is valid utf-8");
-        let typename = self.kind.typename();
-        let lineno = self.lineno;
-        let url = self.url.as_str();
-        let mut out = String::new();
-        let _ = write!(out, "{{\"type\":\"{typename}\",\"file\":\"{file}\"");
-        let _ = write!(out, ",\"lineno\":{lineno},\"url\":\"{url}\"");
-        out
-    }
-}
-
-fn ascii_to_uppercase_inplace(input: &mut str) -> &str {
-    fn upper(x: &mut u8) {
-        if *x >= b'a' {
-            *x = *x | 0b01000000;
-        }
-    }
-    unsafe {
-        input.as_bytes_mut().iter_mut().for_each(upper);
-        input
     }
 }
 
@@ -221,7 +206,7 @@ impl std::fmt::Display for Diagnostic {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let link = self.url.as_str();
         let line = self.lineno;
-        let file = self.file.to_str().expect("valid utf-8");
+        let file = self.file.to_utf8_str();
         let kind = self.kind.typename_upper();
 
         write!(f, "{kind}: link '{link}' on line {line} in file '{file}': ")?;
@@ -244,7 +229,7 @@ impl std::fmt::Display for Diagnostic {
                 )
             }
             DiagnosticKind::Nonexistant { resolved_path } => {
-                let resolved = resolved_path.to_str().unwrap();
+                let resolved = resolved_path.to_utf8_str();
                 writeln!(
                     f,
                     "Pointed-to file (resolved to: '{resolved}') does not exist"
