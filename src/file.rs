@@ -1,94 +1,79 @@
 //! file.rs - Reading and parsing .md files, and finding the links they contain
 
-use std::path::{Path, PathBuf};
-
-/// A link in a file.
-#[derive(Debug)]
-pub struct Link {
-    /// Which column index the text of the link starts at
-    pub text_start: usize,
-    /// Which column index the text of the link ends at
-    pub text_end: usize,
-    /// Which column index the link of the link starts at
-    pub url_start: usize,
-    /// Which column index the link of the link ends at
-    pub url_end: usize,
-}
-
-pub struct Line {
-    /// Line number, starting from 1
-    pub lineno: usize,
-    pub string: String,
-    pub links: Vec<Link>,
-}
+use std::path::PathBuf;
 
 pub struct File {
     pub path: PathBuf,
-    pub lines: Vec<Line>,
+    pub links: Vec<MdLink>,
 }
 
-impl File {
-    pub fn read<P: AsRef<Path>>(path: P, re: &regex::Regex) -> Result<File, std::io::Error> {
-        use std::io::{BufRead, BufReader};
-        let fp = std::fs::OpenOptions::new().read(true).open(path.as_ref())?;
-        let mut reader = BufReader::new(fp);
-        let mut lines = vec![];
-        let mut lineno = 1usize;
-        loop {
-            let mut string = String::new();
-            match reader.read_line(&mut string) {
-                Ok(0) => break,
-                Ok(_n_bytes_read) => {}
-                Err(error) => return Err(error),
-            }
-            let links = find_links(&string, re);
-            lines.push(Line {
-                lineno,
-                string,
-                links,
-            });
-            lineno += 1;
-        }
-
-        Ok(File {
-            path: path.as_ref().to_owned(),
-            lines,
-        })
-    }
-
-    pub fn path_as_str(&self) -> &str {
-        self.path.to_str().expect("all file paths are valid utf-8")
-    }
+/// A link in a markdown file. This includes the entire link.
+///
+/// ```not_rust
+///  --title--  --url---
+/// [link text](link url)
+/// ```
+///
+/// Notice that link references, written with only the square brackets, and defined
+/// later, is *not* supported. Link references looks like `[text]`.
+pub struct MdLink {
+    /// The url of the link.
+    pub url: String,
+    /// The title of the link, or `None` if it's a bare link.
+    pub title: Option<String>,
+    /// The line (1-based) in the file the link starts at
+    pub lineno: usize,
+    /// The column (1-based) on the line where the link starts
+    pub colno: usize,
+    /// The line (1-based) where the link ends
+    pub endlineno: usize,
+    /// The column (1-based) where the link ends
+    pub endcolno: usize,
 }
 
-impl Link {
-    fn new(text_start: usize, text_end: usize, url_start: usize, url_end: usize) -> Self {
-        Self {
-            text_start: text_start,
-            text_end: text_end,
-            url_start,
-            url_end,
-        }
-    }
-
-    pub fn text<'a>(&self, line: &'a str) -> &'a str {
-        &line[self.text_start..self.text_end]
-    }
-
-    pub fn url<'a>(&self, line: &'a str) -> &'a str {
-        &line[self.url_start..self.url_end]
-    }
-}
-
-fn find_links(line: &str, re: &regex::Regex) -> Vec<Link> {
+pub fn mdast_find_links(root_node: &markdown::mdast::Node) -> Vec<MdLink> {
+    assert!(matches!(root_node, markdown::mdast::Node::Root(_)));
     let mut links = vec![];
-    let mut locs = re.capture_locations();
-    let mut col = 0usize;
-    while re.captures_read_at(&mut locs, line, col).is_some() {
-        let (text_s, text_e) = locs.get(1).expect("we have 2 capture groups");
-        let (url_s, url_e) = locs.get(2).expect("we have 2 capture groups");
-        links.push(Link::new(text_s, text_e, url_s, url_e));
-        col = url_e;
-    }
+    _mdast_find_links(root_node, &mut links);
     links
+}
+
+fn _mdast_find_links(node: &markdown::mdast::Node, links: &mut Vec<MdLink>) {
+    use markdown::mdast::{Link, Node};
+    if let Node::Link(Link {
+        url,
+        title,
+        position,
+        ..
+    }) = node
+    {
+        let pos = position
+            .as_ref()
+            .expect("all links in an md document has a position");
+        links.push(MdLink {
+            url: url.to_string(),
+            title: title.clone(),
+            lineno: pos.start.line,
+            colno: pos.start.column,
+            endlineno: pos.end.line,
+            endcolno: pos.end.column,
+        });
+    }
+
+    if let Some(children) = node.children() {
+        for child in children.iter() {
+            _mdast_find_links(child, links);
+        }
+    }
+}
+
+pub fn parse_md(content: &str) -> Option<markdown::mdast::Node> {
+    let default_opts = markdown::ParseOptions::default();
+    match markdown::to_mdast(content, &default_opts) {
+        Ok(node) => Some(node),
+        Err(msg) => {
+            eprintln!("markdown parse error: {msg}");
+            None
+        }
+    }
 }

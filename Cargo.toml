@@ -6,8 +6,17 @@ description = "In a github documentation site, find all dead links"
 
 [dependencies]
 clap = { version = "4.5.54", features = ["derive"] }
+hex = "0.4.3"
 ignore = "0.4.25"
+markdown = "1.0.0"
+#markdown = { path = "/home/anders/temp/markdown-rs/" }
+memmap2 = "0.9.9"
+miette = { version = "7.6.0", features = ["fancy"] }
+rayon = "1.11.0"
 regex = "1.12.2"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0"
+sha1 = "0.10.6"
 thiserror = "2.0.18"
 url = "2.5.8"
 walkdir = "2.5.0"

@@ -8,25 +8,32 @@ use std::path::{Path, PathBuf};
 
 use crate::to_utf8_str::ToUtf8Str;
 
-/// An error (or likely probable error) that can occur with a link. This is the common
-/// properties.
+/// An error (or likely probable error) that can occur with a link.
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct Diagnostic {
-    /// Path to the file with the error.
-    file: PathBuf,
-    /// Line number where this link occurs in the file.
-    lineno: usize,
-    /// The link url, where the link points to.
-    url: String,
     /// Which kind of error this is.
     pub kind: DiagnosticKind,
+    /// Path to the file with the error.
+    pub file: PathBuf,
+    /// The link url, where the link points to.
+    url: String,
+    /// Line number where this link is.
+    lineno: usize,
+    /// Column number on that line where the link is.
+    colno: usize,
+    endlineno: usize,
+    endcolno: usize,
 }
 
 /// The kinds of diagnostic for this link.
+#[derive(serde::Serialize, serde::Deserialize)]
 pub enum DiagnosticKind {
     /// The link url is empty. Contained value is the link text.
     Empty { link_text: String },
     /// Invalid external link. Link couldn't be parsed as an external link  by the `url`
     /// crate.
+
+    #[serde(with = "crate::invalid_external_link_serde")]
     InvalidExternalLink { error: url::ParseError },
     /// Link points to a nonexistant file. The contained value is the resolved path to
     /// where it points to (the file that wasn't found)
@@ -77,8 +84,11 @@ impl DiagnosticKind {
 
 pub struct DiagnosticBuilder<'a> {
     file: &'a Path,
-    lineno: usize,
     url: &'a str,
+    lineno: usize,
+    colno: usize,
+    endlineno: usize,
+    endcolno: usize,
 }
 
 impl DiagnosticBuilder<'_> {
@@ -88,8 +98,11 @@ impl DiagnosticBuilder<'_> {
                 link_text: link_text.to_owned(),
             },
             file: self.file.to_owned(),
-            lineno: self.lineno,
             url: self.url.to_owned(),
+            lineno: self.lineno,
+            colno: self.colno,
+            endlineno: self.endlineno,
+            endcolno: self.endcolno,
         }
     }
 
@@ -99,8 +112,11 @@ impl DiagnosticBuilder<'_> {
                 resolved_path: resolved_to.to_owned(),
             },
             file: self.file.to_owned(),
-            lineno: self.lineno,
             url: self.url.to_owned(),
+            lineno: self.lineno,
+            colno: self.colno,
+            endlineno: self.endlineno,
+            endcolno: self.endcolno,
         }
     }
 
@@ -110,8 +126,11 @@ impl DiagnosticBuilder<'_> {
                 resolved_path: resolved_to.to_owned(),
             },
             file: self.file.to_owned(),
-            lineno: self.lineno,
             url: self.url.to_owned(),
+            lineno: self.lineno,
+            colno: self.colno,
+            endlineno: self.endlineno,
+            endcolno: self.endcolno,
         }
     }
 
@@ -119,8 +138,11 @@ impl DiagnosticBuilder<'_> {
         Diagnostic {
             kind: DiagnosticKind::OutsideRoot,
             file: self.file.to_owned(),
-            lineno: self.lineno,
             url: self.url.to_owned(),
+            lineno: self.lineno,
+            colno: self.colno,
+            endlineno: self.endlineno,
+            endcolno: self.endcolno,
         }
     }
 
@@ -128,15 +150,25 @@ impl DiagnosticBuilder<'_> {
         Diagnostic {
             kind: DiagnosticKind::InvalidExternalLink { error },
             file: self.file.to_owned(),
-            lineno: self.lineno,
             url: self.url.to_owned(),
+            lineno: self.lineno,
+            colno: self.colno,
+            endlineno: self.endlineno,
+            endcolno: self.endcolno,
         }
     }
 }
 
 impl Diagnostic {
-    pub fn new<'a>(file: &'a Path, lineno: usize, url: &'a str) -> DiagnosticBuilder<'a> {
-        DiagnosticBuilder { file, lineno, url }
+    pub fn new<'a>(
+        file: &'a Path,
+        url: &'a str,
+        lineno: usize,
+        colno: usize,
+        endlineno: usize,
+        endcolno: usize,
+    ) -> DiagnosticBuilder<'a> {
+        DiagnosticBuilder { file, url, lineno, colno, endlineno, endcolno }
     }
 
     pub fn to_multiline_string(&self) -> String {
@@ -169,36 +201,20 @@ impl Diagnostic {
     }
 
     pub fn to_json_line(&self) -> String {
-        // TODO use a lib to serialize to json line?
-        let file = self.file.to_utf8_str();
-        let typename = self.kind.typename();
-        let lineno = self.lineno;
-        let url = self.url.as_str();
+        let s = serde_json::to_string(self)
+            .expect("diagnostic is serializable to json");
+        // so important that the json doesn't contain a newline, it will break
+        // the format, so assert on it
+        assert!(!s.contains('\n'), "json contains no newline");
+        s
+    }
 
-        let mut out = String::new();
-        let _ = write!(out, "{{\"type\":\"{typename}\",\"file\":\"{file}\"");
-        let _ = write!(out, ",\"lineno\":{lineno},\"url\":\"{url}\"");
+    pub fn to_miette_fancy(&self, site_root: &Path) -> std::io::Result<String> {
+        let theme = miette::GraphicalTheme::unicode();
+        let reporter = miette::GraphicalReportHandler::new_themed(theme)
+            .with_context_lines(4);
 
-        match &self.kind {
-            DiagnosticKind::Empty { link_text } => {
-                let _ = write!(out, ",\"link_text\":\"{link_text}\"");
-            }
-            DiagnosticKind::InvalidExternalLink { error } => {
-                let _ = write!(out, ",\"error\":\"{error}\"");
-            }
-            DiagnosticKind::Nonexistant { resolved_path } => {
-                let resolved_to = resolved_path.to_utf8_str();
-                let _ = write!(out, ",\"resolved_to\":\"{resolved_to}\"");
-            }
-            DiagnosticKind::Md { resolved_path } => {
-                let resolved_to = resolved_path.to_utf8_str();
-                let _ = write!(out, ",\"resolved_to\":\"{resolved_to}\"");
-            }
-            DiagnosticKind::OutsideRoot => { /* nothing to do */ }
-        }
-        out.push('}');
-        assert!(!out.contains('\n'), "json line contains no newline");
-        out
+        diagnostic_to_miette_fancy(self, site_root, &reporter)
     }
 }
 
@@ -240,4 +256,147 @@ impl std::fmt::Display for Diagnostic {
             }
         }
     }
+}
+
+use miette::{NamedSource, SourceSpan, SourceOffset};
+
+#[derive(Debug, thiserror::Error, miette::Diagnostic)]
+#[error("oops!")]
+#[diagnostic(
+    code(empty),
+    help("provide the link url")
+)]
+struct MietteDiagEmpty {
+    file: PathBuf,
+    // The Source that we're gonna be printing snippets out of.
+    // This can be a String if you don't have or care about file names.
+    #[source_code]
+    src: NamedSource<String>,
+    // Snippets and highlights can be included in the diagnostic!
+    #[label("This bit here")]
+    bad_bit: SourceSpan,
+}
+
+#[derive(Debug, thiserror::Error, miette::Diagnostic)]
+#[error("link points to a file that doesn't exist")]
+#[diagnostic(
+    code(nonexistant),
+    help("make sure the link points to a file that exists")
+)]
+struct MietteDiagNonexistant {
+    file: PathBuf,
+    #[source_code]
+    src: NamedSource<String>,
+    #[label("does not exist")]
+    bad_bit: SourceSpan,
+}
+
+#[derive(Debug, thiserror::Error, miette::Diagnostic)]
+#[error("relativel link points to a file outside of site root")]
+#[diagnostic(
+    code("outside-root"),
+    help("ensure the relative link points to a file within the site root. maybe the document was moved?")
+)]
+struct MietteDiagOutsideRoot {
+    file: PathBuf,
+    #[source_code]
+    src: NamedSource<String>,
+    #[label("points to outside root")]
+    bad_bit: SourceSpan,
+}
+
+#[derive(Debug, thiserror::Error, miette::Diagnostic)]
+#[error("external link is malformed")]
+#[diagnostic(
+    code("invalid-external-link"),
+    help("the external link is malformed. ensure it is correct")
+)]
+struct MietteDiagInvalidExternalLink {
+    file: PathBuf,
+    #[source_code]
+    src: NamedSource<String>,
+    #[label("bad external link")]
+    bad_bit: SourceSpan,
+}
+
+#[derive(Debug, thiserror::Error, miette::Diagnostic)]
+#[error("link points to .md file")]
+#[diagnostic(
+    code("markdown"),
+    help("the link points to a .md file, which may not be what you want")
+)]
+struct MietteDiagMarkdownLink {
+    file: PathBuf,
+    // The Source that we're gonna be printing snippets out of.
+    // This can be a String if you don't have or care about file names.
+    #[source_code]
+    src: NamedSource<String>,
+    // Snippets and highlights can be included in the diagnostic!
+    #[label("links to .md")]
+    bad_bit: SourceSpan,
+}
+
+fn diagnostic_to_miette_fancy(
+    diag: &Diagnostic,
+    site_root: &Path,
+    reporter: &miette::GraphicalReportHandler,
+) -> std::io::Result<String> {
+    let mut out = String::new();
+    let full_path = site_root.join(&diag.file);
+    let source_code = std::fs::read_to_string(full_path)?;
+    let filename = diag.file.to_str().expect("filename is valid utf-8");
+    let start_offset = SourceOffset::from_location(&source_code, diag.lineno, diag.colno);
+    let len = SourceOffset::from_location(&source_code, diag.endlineno, diag.endcolno)
+        .offset()
+        .checked_sub(start_offset.offset())
+        .expect("markdown parser won't ever say that end < start");
+    let span = SourceSpan::new(start_offset, len);
+
+    match &diag.kind {
+        DiagnosticKind::Empty { link_text } => {
+            let inst = MietteDiagEmpty {
+                file: diag.file.to_owned(),
+                src: NamedSource::new(filename, source_code),
+                bad_bit: span,
+            };
+            reporter.render_report(&mut out, &inst).unwrap();
+        }
+        DiagnosticKind::Nonexistant { resolved_path } => {
+            let inst = MietteDiagNonexistant {
+                file: diag.file.to_owned(),
+                src: NamedSource::new(filename, source_code),
+                bad_bit: span,
+            };
+            reporter.render_report(&mut out, &inst).unwrap();
+        }
+        DiagnosticKind::OutsideRoot => {
+            let inst = MietteDiagOutsideRoot {
+                file: diag.file.to_owned(),
+                src: NamedSource::new(filename, source_code),
+                bad_bit: span,
+            };
+            reporter.render_report(&mut out, &inst)
+                .expect("formatting to string is infallible");
+        }
+        DiagnosticKind::InvalidExternalLink { error } => {
+            let inst = MietteDiagInvalidExternalLink {
+                file: diag.file.to_owned(),
+                src: NamedSource::new(filename, source_code),
+                bad_bit: span,
+            };
+            reporter.render_report(&mut out, &inst)
+                .expect("formatting to string is infallible");
+        }
+        DiagnosticKind::Md { resolved_path } => {
+            let inst = MietteDiagMarkdownLink {
+                file: diag.file.to_owned(),
+                src: NamedSource::new(filename, source_code),
+                bad_bit: span,
+            };
+            reporter.render_report(&mut out, &inst)
+                .expect("formatting to string is infallible");
+        }
+        _ => todo!()
+    }
+    Ok(out)
 }
